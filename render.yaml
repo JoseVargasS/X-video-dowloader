@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: x-video-downloader
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
