@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import html
 import json
 import mimetypes
@@ -34,6 +35,9 @@ PORT = int(os.environ.get("PORT", "8765"))
 
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
+X2_CACHE: dict[str, tuple[float, dict]] = {}
+X2_CACHE_LOCK = threading.Lock()
+X2_CACHE_TTL_SECONDS = 600
 
 
 def find_ffmpeg_dir() -> str | None:
@@ -276,6 +280,12 @@ def strip_tags(value: str) -> str:
 
 
 def extract_info_from_x2twitter(url: str) -> dict | None:
+    now = time.time()
+    with X2_CACHE_LOCK:
+        cached = X2_CACHE.get(url)
+        if cached and now - cached[0] < X2_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached[1])
+
     body = urlencode({"q": url, "lang": "en"}).encode("utf-8")
     request = Request(
         "https://x2twitter.com/api/ajaxSearch",
@@ -342,7 +352,7 @@ def extract_info_from_x2twitter(url: str) -> dict | None:
     duration = parse_duration(duration_match.group(1)) if duration_match else None
     metadata = twitter_oembed_metadata(url)
 
-    return {
+    result = {
         "id": tweet_id_from_url(url) or uuid.uuid4().hex,
         "title": metadata.get("description") or title,
         "description": metadata.get("description") or title,
@@ -354,6 +364,9 @@ def extract_info_from_x2twitter(url: str) -> dict | None:
         "formats": formats,
         "extractor_key": "X2TwitterFallback",
     }
+    with X2_CACHE_LOCK:
+        X2_CACHE[url] = (now, copy.deepcopy(result))
+    return result
 
 
 def twitter_oembed_metadata(url: str) -> dict:
@@ -554,6 +567,8 @@ class AppHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/":
             return self.serve_file(WEB_DIR / "index.html")
+        if path in {"/health", "/healthz"}:
+            return json_response(self, {"ok": True})
         if path.startswith("/web/"):
             return self.serve_file(WEB_DIR / path.removeprefix("/web/"))
         if path == "/api/preview-status":

@@ -1,259 +1,175 @@
 # X Video Downloader
 
-Aplicación web local para descargar videos de X/Twitter con interfaz oscura, selección de calidad, vista previa y recorte por tiempo.
+Aplicacion web para descargar videos de X/Twitter con tema oscuro, calidad seleccionable, vista previa, boton de pegar y recorte por tiempo.
 
-![Tema](https://img.shields.io/badge/tema-oscuro-1a1a2e?style=flat)
-![Backend](https://img.shields.io/badge/backend-Python%20http.server-3776ab?style=flat)
-![Frontend](https://img.shields.io/badge/frontend-HTML%2FCSS%2FJS%20sin%20framework-0d1117?style=flat)
-![Extracción](https://img.shields.io/badge/extracción-yt--dlp%20%2B%20fallback-1da1f2?style=flat)
+La app prioriza enlaces MP4 directos de `video.twimg.com` mediante el resolver tipo X2Twitter. Eso hace que la descarga completa empiece casi al instante en el navegador y evita usar CPU local. Si no hay MP4 directo, usa `yt-dlp` como respaldo. Si eliges recorte por tiempo, usa `ffmpeg`.
 
-## Características
+## Caracteristicas
 
-- **Interfaz oscura** con acento celeste tipo Twitter
-- **Vista previa** con controles propios (play, pausa, progreso, volumen)
-- **Selección de calidad** disponible para cada video
-- **Recorte por tiempo** usando ffmpeg
-- **Descarga directa** al navegador sin pasar por memoria del servidor
-- **Fallback inteligente**: intenta MP4 directo antes de usar yt-dlp
-- **Proxy de vista previa** con soporte `Range` para evitar 403
+- Interfaz oscura con acento celeste estilo Twitter/X.
+- Favicon propio en SVG.
+- Boton `Pegar` para reemplazar el input con el contenido del portapapeles.
+- Vista previa con controles propios visibles en videos horizontales, cuadrados y verticales.
+- Proxy `/preview` con soporte `Range` para reproducir videos restringidos sin 403 del navegador.
+- Seleccion de calidades detectadas.
+- Descarga directa por formulario, no por `fetch`/blob, para que el dialogo del navegador aparezca rapido.
+- Nombre de archivo generado con descripcion, usuario, fecha y duracion.
+- Endpoints `/health` y `/healthz` para Render.
 
-## Instalación
-
-### Requisitos previos
+## Requisitos
 
 - Python 3.8+
-- ffmpeg (para recorte de videos)
+- `ffmpeg` para recortar videos
+- Dependencias de `requirements.txt`
 
-### Pasos
+En Docker, `ffmpeg` ya se instala dentro de la imagen.
+
+## Uso local
 
 ```powershell
-# Instalar dependencias
 python -m pip install -U -r requirements.txt
-
-# Verificar ffmpeg (ya debería estar en PATH)
-ffmpeg -version
+python app.py
 ```
 
-> **Nota sobre ffmpeg**: Si el sistema no lo encuentra al mezclar audio/video, agrégalo al `PATH` de Windows.
-
-## Uso
-
-### Interfaz gráfica (recomendado)
+Tambien puedes usar npm como lanzador comodo:
 
 ```powershell
-# Opción 1: Usar el batch file
-.\abrir_interfaz.bat
-
-# Opción 2: Ejecutar directamente
-python .\app.py
+npm run setup
+npm start
 ```
 
-Luego abre tu navegador en `http://localhost:8000` (o el puerto que indique la consola).
+Abre:
 
-**Flujo de uso:**
+```text
+http://127.0.0.1:8765
+```
 
-1. Pega un enlace de X/Twitter (o usa el botón `Pegar` para copiar desde clipboard)
-2. La app carga el video y muestra la vista previa
-3. Selecciona la calidad deseada
-4. Opcional: configura recorte por tiempo (inicio y fin en segundos)
-5. Haz clic en `Descargar`
+Flujo normal:
 
-El archivo se guarda en la carpeta de descargas configurada en tu navegador.
+1. Pega un enlace de X/Twitter o usa `Pegar`.
+2. Presiona `Cargar`.
+3. Revisa la vista previa.
+4. Elige calidad.
+5. Opcionalmente define inicio y fin para recortar.
+6. Presiona `Descargar`.
 
-### Línea de comandos
+La descarga se guarda donde tu navegador tenga configuradas sus descargas.
+
+## Descarga por CLI
 
 ```powershell
-# Descargar con enlace por defecto
-python .\x_video_downloader.py
-
-# Descargar un enlace específico
 python .\x_video_downloader.py "https://x.com/i/status/2056229877867536881"
-
-# Ver calidades disponibles sin descargar
 python .\x_video_downloader.py "https://x.com/i/status/2056229877867536881" --list
-
-# Descargar en mejor calidad
-python .\x_video_downloader.py "https://x.com/i/status/2056229877867536881" --quality best
-
-# Descargar hasta 720p (mejor variante disponible)
 python .\x_video_downloader.py "https://x.com/i/status/2056229877867536881" --quality 720p
-
-# Usar cookies del navegador (para contenido restringido)
 python .\x_video_downloader.py "https://x.com/i/status/2056229877867536881" --cookies-from-browser chrome
 ```
 
-Los archivos descargados se guardan en la carpeta `downloads`.
+## Nombre de archivo
 
-## Formato de nombres de archivo
+Formato:
 
-Los videos descargados usan este formato:
-
-```
-primeras-seis-palabras @usuario ddmmyy mm-ss.mp4
+```text
+primeras 6 palabras @usuario ddmmyy mm-ss.mp4
 ```
 
-Ejemplo: `Video increible de la nueva funcion @usuario 150526 03-42.mp4`
+Ejemplo:
 
-- **Primeras 6 palabras**: Extracto de la descripción del tweet
-- **@usuario**: Nombre de usuario del autor
-- **ddmmyy**: Fecha en formato día-mes-año
-- **mm-ss**: Duración en minutos-segundos (Windows no permite `:` en nombres)
+```text
+Benjamin Netanyahu hands over the script @IndiaTales7 170526 0-26.mp4
+```
+
+En Windows se usa `-` en la duracion porque `:` no es valido en nombres de archivo.
 
 ## Arquitectura
 
-### Backend (`app.py`)
+Backend:
 
-Servidor HTTP Python con los siguientes endpoints:
+- `app.py`: servidor HTTP con `http.server`.
+- `x_video_downloader.py`: descargador CLI con `yt-dlp`.
+- `ffmpeg`: recorte cuando el usuario elige un rango.
 
-| Endpoint    | Método | Descripción                                                    |
-| ----------- | ------ | -------------------------------------------------------------- |
-| `/`         | GET    | Sirve la interfaz web (`web/index.html`)                       |
-| `/app.js`   | GET    | Sirve el frontend JavaScript                                   |
-| `/info`     | POST   | Obtiene información del video (calidades, duración, thumbnail) |
-| `/download` | POST   | Descarga el video (streaming directo o procesado)              |
-| `/preview`  | GET    | Proxy para vista previa con soporte `Range`                    |
-| `/health`   | GET    | Endpoint de salud para deploy                                  |
+Frontend:
 
-### Flujo de descarga
+- `web/index.html`: estructura.
+- `web/styles.css`: tema visual.
+- `web/app.js`: carga de metadata, controles de video y descarga.
+- `web/favicon.svg`: icono de la app.
 
+Endpoints principales:
+
+| Endpoint | Metodo | Uso |
+| --- | --- | --- |
+| `/` | GET | Interfaz web |
+| `/web/*` | GET | Archivos estaticos |
+| `/api/info` | POST | Metadata, calidades y preview |
+| `/api/preview-status` | GET | Estado de preparacion de preview |
+| `/download` | GET/POST | Descarga directa o procesada |
+| `/preview` | GET | Proxy de video con soporte `Range` |
+| `/health`, `/healthz` | GET | Health checks para deploy |
+
+Flujo de resolucion:
+
+```text
+URL de X
+  -> X2Twitter / MP4 directo
+      -> descarga streaming inmediata desde video.twimg.com
+  -> si no hay MP4 directo, yt-dlp
+      -> descarga HLS y mezcla con ffmpeg si hace falta
+  -> si hay recorte
+      -> ffmpeg procesa el rango elegido
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Usuario   │────▶│   Frontend   │────▶│    Backend      │
-│   (browser) │     │  (HTML/JS)   │     │   (Python)      │
-└─────────────┘     └──────────────┘     └─────────────────┘
-                           │                    │
-                           │                    ▼
-                           │           ┌─────────────────┐
-                           │           │ 1. Intenta MP4  │
-                           │           │    directo      │
-                           │           └────────┬────────┘
-                           │                    │
-                           │           ┌────────▼────────┐
-                           │           │ 2. Si falla,    │
-                           │           │    yt-dlp/HLS   │
-                           │           └────────┬────────┘
-                           │                    │
-                           │           ┌────────▼────────┐
-                           │           │ 3. Si hay       │
-                           │           │    recorte,     │
-                           │           │    ffmpeg       │
-                           │           └────────┬────────┘
-                           │                    │
-                           ▼           ┌────────▼────────┐
-                    ◀───────────────── │  Streaming     │
-                    (download directo) │  directo        │
-                                       └─────────────────┘
-```
-
-### Estrategia de extracción
-
-1. **Primero**: Intenta resolver MP4 directo (estilo X2Twitter desde `video.twimg.com`)
-   - ✅ Evita CPU local
-   - ✅ Descarga más rápida
-   - ✅ Sin procesamiento HLS
-
-2. **Segundo**: Si no hay MP4 directo, usa `yt-dlp` como fallback
-   - Descarga fragments HLS
-   - Mezcla audio/video con ffmpeg si es necesario
-
-3. **Recorte**: Si el usuario especifica tiempos, usa `ffmpeg` para cortar el video
-
-### Frontend (`web/`)
-
-- **index.html**: Estructura de la interfaz oscura
-- **app.js**: Lógica de comunicación con backend, controles de video y descarga
-
-**Controles de video propios:**
-
-- Play/Pausa
-- Barra de progreso scrubable
-- Control de volumen
-- Funciona con videos verticales y horizontales
 
 ## Docker
 
-Para usar con ffmpeg disponible sin instalarlo en el sistema:
-
 ```powershell
-# Construir imagen
 docker build -t x-video-downloader .
-
-# Ejecutar
-docker run -p 8000:8000 x-video-downloader
+docker run -p 8765:8765 -e HOST=0.0.0.0 -e PORT=8765 x-video-downloader
 ```
 
-## Deploy
+Luego abre `http://127.0.0.1:8765`.
 
-Para acceder desde cualquier lugar, despliega como Web Service:
+## Deploy en Render
 
-### Plataformas soportadas
+Render puede usar el `Dockerfile` y `render.yaml` incluidos.
 
-- **Render**: Usa `render.yaml` incluido
-- **Railway**: Detecta Python automáticamente
-- **Fly.io**: Sigue instrucciones en `DEPLOY.md`
-- **VPS propio**: Docker o instalación manual
+Configuracion recomendada:
 
-### Consideraciones
+- Runtime: `Docker`
+- Branch: `main`
+- Root Directory: vacio
+- Dockerfile path: `./Dockerfile`
+- Environment Variables: ninguna obligatoria si usas `render.yaml`; manualmente puedes poner `HOST=0.0.0.0`
+- Health Check Path: `/healthz`
 
-- Requiere backend Python (no funciona solo con GitHub Pages)
-- ffmpeg debe estar disponible para recorte de videos
-- Ver [DEPLOY.md](DEPLOY.md) para instrucciones completas
+Render define `PORT` automaticamente. No uses GitHub Pages para esta app porque necesita backend Python.
 
-## Estructura del proyecto
+## Solucion de problemas
 
-```
-X video dowloader/
-├── app.py                    # Servidor backend
-├── x_video_downloader.py     # CLI downloader
-├── requirements.txt          # Dependencias Python
-├── web/
-│   ├── index.html           # Interfaz web
-│   └── app.js               # Lógica frontend
-├── abrir_interfaz.bat       # Batch para abrir interfaz
-├── descargar_x_video.bat    # Batch para CLI
-├── Dockerfile               # Configuración Docker
-├── render.yaml              # Configuración Render
-└── DEPLOY.md                # Guía de deploy
-```
+Si la vista previa muestra 403 o no reproduce:
 
-## Solución de problemas
+- Verifica que el `src` del video apunte a `/preview?...`, no a `video.twimg.com`.
+- Recarga metadata con `Cargar`.
 
-### Error 403 en vista previa
+Si la descarga tarda:
 
-La vista previa usa `/preview` como proxy para evitar errores CORS y 403 de `video.twimg.com`. Si persiste:
+- La descarga completa por MP4 directo debe abrir rapido el dialogo del navegador.
+- El recorte siempre demora mas porque requiere `ffmpeg`.
+- El fallback `yt-dlp` tambien puede tardar porque descarga y mezcla fragmentos HLS.
 
-1. Verifica que el servidor esté corriendo
-2. Revisa la consola del navegador por errores
-
-### ffmpeg no encontrado
+Si `ffmpeg` no existe:
 
 ```powershell
-# Windows: verificar PATH
 where ffmpeg
-
-# Si no existe, instalar desde https://ffmpeg.org/download.html
-# o usar Docker que ya lo incluye
 ```
 
-### yt-dlp falla al extraer
+Instalalo en Windows o usa Docker.
 
-Para contenido restringido que requiere login:
+## Seguridad
 
-```powershell
-python .\x_video_downloader.py "URL" --cookies-from-browser chrome
-```
-
-### La descarga tarda mucho
-
-- Videos HLS requieren descargar y mezclar fragments
-- Recorte con ffmpeg añade tiempo de procesamiento
-- Primero intenta MP4 directo (más rápido), luego fallback
+- No subas cookies, caches ni credenciales.
+- Usa cookies del navegador solo en local y solo si necesitas acceder a contenido de tu cuenta.
+- Respeta derechos de autor, terminos de servicio y privacidad del contenido que descargues.
 
 ## Licencia
 
-Código disponible para uso personal y educativo.
-
-## Créditos
-
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - Extracción de videos
-- [ffmpeg](https://ffmpeg.org/) - Recorte y procesamiento de video
+Uso personal y educativo.

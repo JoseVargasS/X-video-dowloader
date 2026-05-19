@@ -1,0 +1,19 @@
+{
+  "name": "x-video-downloader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web app para descargar videos de X/Twitter con backend Python.",
+  "scripts": {
+    "start": "python app.py",
+    "setup": "python -m pip install -U -r requirements.txt",
+    "check": "python -m py_compile app.py x_video_downloader.py"
+  },
+  "keywords": [
+    "x",
+    "twitter",
+    "video",
+    "downloader",
+    "yt-dlp"
+  ],
+  "license": "UNLICENSED"
+}
