@@ -31,55 +31,22 @@
       </form>
 
       <section class="workspace" id="workspace" hidden>
-        <div class="preview-panel">
-          <div class="video-stage" id="videoStage">
-            <img id="thumbnail" alt="" hidden />
-            <video id="videoPlayer" playsinline hidden></video>
-            <div class="loader" id="previewLoader">Preparando vista previa...</div>
-            <div class="custom-controls" id="customControls" hidden>
-              <button type="button" id="playPauseButton" aria-label="Reproducir">Play</button>
-              <input type="range" id="seekSlider" min="0" max="1000" value="0" aria-label="Progreso" />
-              <span id="timeReadout">0:00 / 0:00</span>
-              <button type="button" id="muteButton" aria-label="Silenciar">Vol</button>
-              <input type="range" id="volumeSlider" min="0" max="1" step="0.05" value="1" aria-label="Volumen" />
-            </div>
-          </div>
-          <div class="video-meta">
+        <div class="collection-head">
+          <div>
             <h2 id="videoTitle"></h2>
             <span id="durationLabel"></span>
           </div>
+          <div class="collection-actions">
+            <button type="button" id="selectAllButton">Seleccionar todos</button>
+            <button type="button" id="downloadSelectedButton">Descargar seleccionados</button>
+          </div>
         </div>
 
-        <form class="download-panel" id="downloadForm" method="post" action="/download" target="downloadFrame">
-          <input type="hidden" name="token" id="tokenInput" />
-
-          <label class="field-label" for="qualitySelect">Calidad</label>
-          <select id="qualitySelect" name="format"></select>
-
-          <div class="range-head">
-            <span>Rango</span>
-            <button type="button" id="fullButton">Todo el video</button>
-          </div>
-
-          <div class="time-grid">
-            <label>
-              <span>Desde</span>
-              <input id="startInput" name="start" type="text" inputmode="numeric" placeholder="0:00" />
-            </label>
-            <label>
-              <span>Hasta</span>
-              <input id="endInput" name="end" type="text" inputmode="numeric" placeholder="final" />
-            </label>
-          </div>
-
-          <p class="hint" id="trimHint">Dejalo vacio para descargar el video completo.</p>
-
-          <button class="download-button" id="downloadButton" type="submit">Descargar</button>
-        </form>
+        <div class="video-list" id="videoList"></div>
       </section>
 
       <p class="message" id="message" role="status"></p>
-      <iframe name="downloadFrame" title="Descarga" hidden></iframe>
+      <iframe id="downloadFrame" name="downloadFrame" title="Descarga" hidden></iframe>
     </main>
     <script src="/web/app.js"></script>
   </body>

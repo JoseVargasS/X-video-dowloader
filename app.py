@@ -12,13 +12,15 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import webbrowser
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import yt_dlp
@@ -106,6 +108,24 @@ def clean_filename(value: str) -> str:
     return value[:140] or "x-video"
 
 
+def ascii_header_filename(value: str) -> str:
+    value = clean_filename(value)
+    ascii_name = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r"[^A-Za-z0-9 .@()_-]", "", ascii_name).strip()
+    ascii_name = re.sub(r"\s+", " ", ascii_name)
+    if not ascii_name or ascii_name.startswith("."):
+        suffix = Path(value).suffix if Path(value).suffix else ".mp4"
+        ascii_name = f"x-video{suffix}"
+    return ascii_name[:140]
+
+
+def content_disposition_attachment(filename: str) -> str:
+    safe_filename = clean_filename(filename)
+    fallback = ascii_header_filename(safe_filename).replace("\\", "").replace('"', "")
+    encoded = quote(safe_filename, safe="")
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
+
+
 def parse_time(value: str | None) -> float | None:
     if not value:
         return None
@@ -181,13 +201,19 @@ def first_words(value: str, count: int = 6) -> str:
     return " ".join(words[:count]) or "video de x"
 
 
-def download_basename(job: dict) -> str:
+def media_count(job: dict) -> int:
+    indexes = {str(item.get("mediaIndex") or "1") for item in job.get("formats") or []}
+    return len(indexes) or 1
+
+
+def download_basename(job: dict, media_index: str | None = None) -> str:
     description = first_words(job.get("description") or job.get("title") or "video de x")
     user = str(job.get("uploader_id") or job.get("uploader") or "x").lstrip("@")
     date = job.get("upload_date") or datetime.now(timezone.utc).strftime("%d%m%y")
     # Windows does not allow ":" in filenames, so the visible mm:ss duration is saved as mm-ss.
     duration = (job.get("durationLabel") or "0:00").replace(":", "-")
-    return clean_filename(f"{description} @{user} {date} {duration}") + ".mp4"
+    media_label = f" video-{media_index}" if media_index and media_count(job) > 1 else ""
+    return clean_filename(f"{description} @{user} {date} {duration}{media_label}") + ".mp4"
 
 
 def ydl_base_options() -> dict:
@@ -205,9 +231,39 @@ def ydl_base_options() -> dict:
     return options
 
 
+def upstream_video_headers() -> dict[str, str]:
+    return {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://x.com/",
+        "Accept": "video/mp4,video/*;q=0.9,*/*;q=0.8",
+    }
+
+
+def media_key_from_video_url(value: str, fallback: str) -> str:
+    parsed = urlparse(value)
+    parts = [part for part in parsed.path.split("/") if part]
+    for marker in ("ext_tw_video", "amplify_video", "tweet_video"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index + 1 < len(parts):
+                return f"{marker}:{parts[index + 1]}"
+    filename = Path(parsed.path).name
+    return filename or fallback
+
+
 def video_formats(info: dict) -> list[dict]:
     formats = []
-    for fmt in info.get("formats") or []:
+    source_formats = []
+    entries = [entry for entry in info.get("entries") or [] if isinstance(entry, dict)]
+    if entries:
+        for media_index, entry in enumerate(entries, start=1):
+            for fmt in entry.get("formats") or []:
+                fmt = {**fmt, "media_index": str(media_index)}
+                source_formats.append(fmt)
+    else:
+        source_formats = info.get("formats") or []
+
+    for fmt in source_formats:
         if fmt.get("vcodec") in (None, "none"):
             continue
         width = fmt.get("width")
@@ -231,6 +287,8 @@ def video_formats(info: dict) -> list[dict]:
                 "source": fmt.get("source") or "yt-dlp",
                 "url": fmt.get("url"),
                 "filename": fmt.get("filename"),
+                "mediaIndex": str(fmt.get("media_index") or "1"),
+                "thumbnail": fmt.get("thumbnail"),
             }
         )
     formats.sort(key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)
@@ -328,6 +386,7 @@ def extract_info_from_x2twitter(url: str) -> dict | None:
         if size_match:
             width = int(size_match.group(1))
             height = int(size_match.group(2))
+        media_key = media_key_from_video_url(direct_url, f"x2:{index}")
         formats.append(
             {
                 "format_id": f"x2-{index}",
@@ -339,13 +398,30 @@ def extract_info_from_x2twitter(url: str) -> dict | None:
                 "url": direct_url,
                 "source": "x2twitter",
                 "filename": token_data.get("filename"),
+                "media_key": media_key,
             }
         )
 
     if not formats:
         return None
 
-    thumbnail_match = re.search(r'<img[^>]+src="([^"]+)"', markup, re.IGNORECASE)
+    media_indexes: dict[str, str] = {}
+    for item in formats:
+        key = item.get("media_key") or item["format_id"]
+        if key not in media_indexes:
+            media_indexes[key] = str(len(media_indexes) + 1)
+        item["media_index"] = media_indexes[key]
+
+    thumbnail_urls = []
+    for match in re.finditer(r'<img[^>]+src="([^"]+)"', markup, re.IGNORECASE):
+        thumbnail_url = html.unescape(match.group(1))
+        if thumbnail_url not in thumbnail_urls:
+            thumbnail_urls.append(thumbnail_url)
+    if len(thumbnail_urls) >= len(media_indexes):
+        for item in formats:
+            index = int(item["media_index"]) - 1
+            item["thumbnail"] = thumbnail_urls[index]
+
     title_match = re.search(r"<h3>(.*?)</h3>", markup, re.IGNORECASE | re.DOTALL)
     duration_match = re.search(r"<p>\s*(\d+(?::\d+){1,2})\s*</p>", markup, re.IGNORECASE)
     title = html.unescape(strip_tags(title_match.group(1))).strip() if title_match else "Video de X"
@@ -359,7 +435,7 @@ def extract_info_from_x2twitter(url: str) -> dict | None:
         "uploader": metadata.get("uploader"),
         "uploader_id": metadata.get("uploader_id") or username_from_url(url),
         "upload_date": metadata.get("upload_date") or upload_date({}, url),
-        "thumbnail": html.unescape(thumbnail_match.group(1)) if thumbnail_match else None,
+        "thumbnail": thumbnail_urls[0] if thumbnail_urls else None,
         "duration": duration,
         "formats": formats,
         "extractor_key": "X2TwitterFallback",
@@ -415,18 +491,39 @@ def download_to_file(url: str, fmt: str, start: float | None, end: float | None,
     return newest_mp4(workdir)
 
 
-def direct_format(job: dict, fmt: str) -> dict | None:
+def media_matches(item: dict, media_index: str | None) -> bool:
+    if not media_index:
+        return True
+    return str(item.get("mediaIndex") or "1") == str(media_index)
+
+
+def direct_format(job: dict, fmt: str, media_index: str | None = None) -> dict | None:
     for item in job.get("formats") or []:
-        if item.get("id") == fmt and item.get("source") == "x2twitter" and item.get("url"):
+        if item.get("id") == fmt and item.get("source") == "x2twitter" and item.get("url") and media_matches(item, media_index):
             return item
     return None
 
 
-def direct_best_format(job: dict) -> dict | None:
-    direct = [item for item in job.get("formats") or [] if item.get("source") == "x2twitter" and item.get("url")]
+def direct_best_format(job: dict, media_index: str | None = None) -> dict | None:
+    direct = [
+        item
+        for item in job.get("formats") or []
+        if item.get("source") == "x2twitter" and item.get("url") and media_matches(item, media_index)
+    ]
     if not direct:
         return None
     return sorted(direct, key=lambda item: item.get("height") or 0, reverse=True)[0]
+
+
+def is_full_download(start: float | None, end: float | None, duration: float | None) -> bool:
+    if start is None and end is None:
+        return True
+    starts_at_beginning = start is None or start <= 0
+    if starts_at_beginning and end is None:
+        return True
+    if starts_at_beginning and duration and end is not None and end >= duration - 0.5:
+        return True
+    return False
 
 
 def ffmpeg_trim_direct(source_url: str, start: float | None, end: float | None, title: str) -> Path:
@@ -438,6 +535,8 @@ def ffmpeg_trim_direct(source_url: str, start: float | None, end: float | None, 
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
     if start is not None:
         command += ["-ss", str(start)]
+    headers = "".join(f"{name}: {value}\r\n" for name, value in upstream_video_headers().items())
+    command += ["-headers", headers]
     command += ["-i", source_url]
     if end is not None:
         if start is not None:
@@ -445,26 +544,40 @@ def ffmpeg_trim_direct(source_url: str, start: float | None, end: float | None, 
         else:
             command += ["-to", str(end)]
     command += ["-c", "copy", str(output)]
-    subprocess.run(command, check=True, timeout=600)
+    try:
+        completed = subprocess.run(command, check=False, timeout=600, capture_output=True, text=True)
+    except subprocess.TimeoutExpired as exc:
+        raise AppError("El recorte tardo demasiado y fue cancelado. Prueba con un rango mas corto.", 504) from exc
+    if completed.returncode != 0:
+        detail = clean_error(completed.stderr) if completed.stderr else "ffmpeg no pudo procesar ese rango."
+        raise AppError(f"No pude recortar el video. {detail}", 422)
     return output
 
 
 def send_direct_download(handler: BaseHTTPRequestHandler, source_url: str, filename: str) -> None:
-    request = Request(source_url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=60) as response:
-        content_type = response.headers.get("Content-Type", "video/mp4")
-        content_length = response.headers.get("Content-Length")
-        handler.send_response(HTTPStatus.OK)
-        handler.send_header("Content-Type", content_type)
-        handler.send_header("Content-Disposition", f'attachment; filename="{clean_filename(filename)}"')
-        if content_length:
-            handler.send_header("Content-Length", content_length)
-        handler.end_headers()
-        shutil.copyfileobj(response, handler.wfile)
+    request = Request(source_url, headers=upstream_video_headers())
+    try:
+        with urlopen(request, timeout=60) as response:
+            content_type = response.headers.get("Content-Type", "video/mp4")
+            content_length = response.headers.get("Content-Length")
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header("Content-Type", content_type)
+            handler.send_header("Content-Disposition", content_disposition_attachment(filename))
+            if content_length:
+                handler.send_header("Content-Length", content_length)
+            handler.end_headers()
+            shutil.copyfileobj(response, handler.wfile)
+    except HTTPError as exc:
+        raise AppError(
+            f"X bloqueo el MP4 directo durante la descarga (HTTP {exc.code}). Carga el enlace otra vez e intenta de nuevo.",
+            502,
+        ) from exc
+    except URLError as exc:
+        raise AppError(f"No pude conectar con el MP4 directo de X: {exc.reason}", 502) from exc
 
 
 def proxy_direct_preview(handler: BaseHTTPRequestHandler, source_url: str) -> None:
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://x.com/"}
+    headers = upstream_video_headers()
     range_header = handler.headers.get("Range")
     if range_header:
         headers["Range"] = range_header
@@ -507,14 +620,48 @@ def make_job(info: dict, url: str) -> dict:
         "created": time.time(),
         "preview_path": None,
         "preview_error": None,
+        "preview_paths": {},
+        "preview_errors": {},
+        "preview_direct_urls": {},
     }
     with JOBS_LOCK:
         JOBS[token] = job
     return job
 
 
+def job_videos(job: dict) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for item in job.get("formats") or []:
+        media_index = str(item.get("mediaIndex") or "1")
+        current = grouped.get(media_index)
+        if not current or (item.get("height") or 0) > (current.get("height") or 0):
+            grouped[media_index] = item
+    videos = []
+    for media_index in sorted(grouped, key=lambda value: (0, int(value)) if value.isdigit() else (1, value)):
+        item = grouped[media_index]
+        height = item.get("height")
+        width = item.get("width")
+        size = f" - {width}x{height}" if width and height else ""
+        videos.append(
+            {
+                "id": media_index,
+                "label": f"Video {media_index}{size}",
+                "width": width or 16,
+                "height": height or 9,
+                "thumbnail": item.get("thumbnail"),
+            }
+        )
+    return videos or [{"id": "1", "label": "Video 1", "width": 16, "height": 9}]
+
+
 def public_job(job: dict) -> dict:
-    best = sorted(job["formats"], key=lambda item: item.get("height") or 0, reverse=True)[0]
+    videos = job_videos(job)
+    default_media = videos[0]["id"]
+    best = sorted(
+        [item for item in job["formats"] if media_matches(item, default_media)] or job["formats"],
+        key=lambda item: item.get("height") or 0,
+        reverse=True,
+    )[0]
     width = best.get("width") or 16
     height = best.get("height") or 9
     return {
@@ -524,6 +671,7 @@ def public_job(job: dict) -> dict:
         "duration": job.get("duration"),
         "durationLabel": job.get("durationLabel"),
         "downloadName": download_basename(job),
+        "videos": videos,
         "formats": job["formats"],
         "previewWidth": width,
         "previewHeight": height,
@@ -533,27 +681,33 @@ def public_job(job: dict) -> dict:
     }
 
 
-def start_preview(token: str) -> None:
+def preview_key(media_index: str | None) -> str:
+    return str(media_index or "1")
+
+
+def start_preview(token: str, media_index: str | None = None) -> None:
+    key = preview_key(media_index)
+
     def worker() -> None:
         with JOBS_LOCK:
             job = JOBS.get(token)
         if not job:
             return
         try:
-            direct = direct_best_format(job)
+            direct = direct_best_format(job, key)
             if direct:
                 with JOBS_LOCK:
                     if token in JOBS:
-                        JOBS[token]["preview_direct_url"] = direct["url"]
+                        JOBS[token].setdefault("preview_direct_urls", {})[key] = direct["url"]
                 return
             path = download_to_file(job["url"], "bestvideo+bestaudio/best", None, None, job["title"])
             with JOBS_LOCK:
                 if token in JOBS:
-                    JOBS[token]["preview_path"] = str(path)
+                    JOBS[token].setdefault("preview_paths", {})[key] = str(path)
         except Exception as exc:  # noqa: BLE001
             with JOBS_LOCK:
                 if token in JOBS:
-                    JOBS[token]["preview_error"] = str(exc)
+                    JOBS[token].setdefault("preview_errors", {})[key] = str(exc)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -572,9 +726,11 @@ class AppHandler(BaseHTTPRequestHandler):
         if path.startswith("/web/"):
             return self.serve_file(WEB_DIR / path.removeprefix("/web/"))
         if path == "/api/preview-status":
-            return self.preview_status(parse_qs(parsed.query).get("token", [""])[0])
+            query = parse_qs(parsed.query)
+            return self.preview_status(query.get("token", [""])[0], query.get("media", ["1"])[0])
         if path == "/preview":
-            return self.serve_preview(parse_qs(parsed.query).get("token", [""])[0])
+            query = parse_qs(parsed.query)
+            return self.serve_preview(query.get("token", [""])[0], query.get("media", ["1"])[0])
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
@@ -616,39 +772,48 @@ class AppHandler(BaseHTTPRequestHandler):
     def api_preview(self) -> None:
         data = read_json(self)
         token = data.get("token")
+        media_index = preview_key(data.get("media"))
         with JOBS_LOCK:
             job = JOBS.get(token)
         if not job:
             return json_response(self, {"error": "Video no encontrado. Carga el enlace otra vez."}, 404)
-        if not job.get("preview_path") and not job.get("preview_error"):
-            start_preview(token)
+        paths = job.get("preview_paths") or {}
+        direct_urls = job.get("preview_direct_urls") or {}
+        errors = job.get("preview_errors") or {}
+        if not paths.get(media_index) and not direct_urls.get(media_index) and not errors.get(media_index):
+            start_preview(token, media_index)
         json_response(self, {"ok": True})
 
-    def preview_status(self, token: str) -> None:
+    def preview_status(self, token: str, media_index: str | None = None) -> None:
+        key = preview_key(media_index)
         with JOBS_LOCK:
             job = JOBS.get(token)
         if not job:
             return json_response(self, {"error": "Video no encontrado."}, 404)
-        if job.get("preview_path"):
-            return json_response(self, {"status": "ready", "url": f"/preview?token={token}"})
-        if job.get("preview_direct_url"):
-            return json_response(self, {"status": "ready", "url": f"/preview?token={token}"})
-        if job.get("preview_error"):
-            return json_response(self, {"status": "error", "error": job["preview_error"]})
+        paths = job.get("preview_paths") or {}
+        direct_urls = job.get("preview_direct_urls") or {}
+        errors = job.get("preview_errors") or {}
+        if paths.get(key) or direct_urls.get(key):
+            return json_response(self, {"status": "ready", "url": f"/preview?token={token}&media={key}"})
+        if errors.get(key):
+            return json_response(self, {"status": "error", "error": errors[key]})
         json_response(self, {"status": "pending"})
 
-    def serve_preview(self, token: str) -> None:
+    def serve_preview(self, token: str, media_index: str | None = None) -> None:
+        key = preview_key(media_index)
         with JOBS_LOCK:
             job = JOBS.get(token)
         if not job:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        if job.get("preview_direct_url"):
-            return proxy_direct_preview(self, job["preview_direct_url"])
-        if not job.get("preview_path"):
+        direct_urls = job.get("preview_direct_urls") or {}
+        if direct_urls.get(key):
+            return proxy_direct_preview(self, direct_urls[key])
+        paths = job.get("preview_paths") or {}
+        if not paths.get(key):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        path = Path(job["preview_path"])
+        path = Path(paths[key])
         if not path.exists():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -698,12 +863,17 @@ class AppHandler(BaseHTTPRequestHandler):
             fields = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
             token = fields.get("token", [""])[0]
             fmt = fields.get("format", ["bestvideo+bestaudio/best"])[0]
+            media_index = preview_key(fields.get("media", ["1"])[0])
             start = parse_time(fields.get("start", [""])[0])
             end = parse_time(fields.get("end", [""])[0])
             with JOBS_LOCK:
                 job = JOBS.get(token)
             if not job:
                 return json_response(self, {"error": "Video no encontrado. Carga el enlace otra vez."}, 404)
+            full_download = is_full_download(start, end, job.get("duration"))
+            if full_download:
+                start = None
+                end = None
             if (start is not None or end is not None) and not FFMPEG_DIR:
                 return json_response(
                     self,
@@ -713,18 +883,18 @@ class AppHandler(BaseHTTPRequestHandler):
             if start is not None and end is not None and end <= start:
                 return json_response(self, {"error": "El tiempo final debe ser mayor que el inicial."}, 400)
 
-            direct = direct_format(job, fmt)
+            direct = direct_format(job, fmt, media_index)
             if not direct and fmt == "bestvideo+bestaudio/best":
-                direct = direct_best_format(job)
+                direct = direct_best_format(job, media_index)
             if direct:
                 if start is None and end is None:
-                    filename = download_basename(job)
+                    filename = download_basename(job, media_index)
                     return send_direct_download(self, direct["url"], filename)
                 downloaded = ffmpeg_trim_direct(direct["url"], start, end, job["title"])
-                filename = download_basename(job)
+                filename = download_basename(job, media_index)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "video/mp4")
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", content_disposition_attachment(filename))
                 self.send_header("Content-Length", str(downloaded.stat().st_size))
                 self.end_headers()
                 with downloaded.open("rb") as file:
@@ -732,10 +902,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
 
             downloaded = download_to_file(job["url"], fmt, start, end, job["title"])
-            filename = download_basename(job)
+            filename = download_basename(job, media_index)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Disposition", content_disposition_attachment(filename))
             self.send_header("Content-Length", str(downloaded.stat().st_size))
             self.end_headers()
             with downloaded.open("rb") as file:
