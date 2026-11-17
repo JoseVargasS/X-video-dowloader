@@ -35,14 +35,20 @@ Render asigna `PORT` automaticamente.
 
 ## 3. Sobre recortes de video
 
-La descarga completa funciona con Python y `yt-dlp`. Para recortar por minuto/segundo, el servidor necesita `ffmpeg`.
+La descarga completa usa primero MP4 directo de `video.twimg.com` cuando el resolver lo encuentra. Para recortar por minuto/segundo, el servidor necesita `ffmpeg`.
 
 El `Dockerfile` incluido instala `ffmpeg`, asi que los recortes quedan disponibles en servicios que desplieguen el contenedor.
 
-## 4. Videos restringidos
+## 4. Posts con varios videos
 
-La app intenta primero `yt-dlp`. Si X no expone el video como media normal, usa un fallback compatible con enlaces directos de `video.twimg.com`, similar a los descargadores web.
+La interfaz soporta posts con varios videos. En esos casos muestra un grid de tarjetas: cada video tiene preview, calidad, rango de recorte y descarga propios. Tambien permite seleccionar varios videos y enviarlos al navegador como descargas separadas.
 
-## 5. Recomendacion importante
+El navegador puede pedir permiso para multiples descargas si se usa `Descargar seleccionados`.
+
+## 5. Videos restringidos
+
+La app intenta primero resolver MP4 directo con un flujo tipo X2Twitter. Si no hay MP4 directo, usa `yt-dlp` como fallback. Las previews de MP4 directo pasan por `/preview` con soporte `Range` para evitar que el navegador apunte directo a `video.twimg.com`.
+
+## 6. Recomendacion importante
 
 No subas cookies personales al repositorio. Si X pide sesion para ciertos videos, usa la app local o configura un servidor privado.
