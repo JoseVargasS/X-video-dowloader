@@ -195,10 +195,17 @@ def upload_date(value: dict, url: str) -> str:
     return tweet_date_from_id(tweet_id_from_url(url)) or datetime.now(timezone.utc).strftime("%d%m%y")
 
 
-def first_words(value: str, count: int = 6) -> str:
-    value = re.sub(r"https?://\S+", "", value)
-    words = re.findall(r"[\w@#]+", value, flags=re.UNICODE)
-    return " ".join(words[:count]) or "video de x"
+def short_title(value: str, words: int = 6, limit: int = 50) -> str:
+    """Titulo corto unico para pantalla y nombre de archivo: 6 palabras y 50 caracteres."""
+    text = re.sub(r"https?://\S+", "", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    clipped = " ".join(text.split(" ")[:words])
+    if len(clipped) > limit:
+        head = clipped[:limit]
+        clipped = head.rsplit(" ", 1)[0] if " " in head else head
+    if len(clipped) < len(text):
+        clipped = clipped.rstrip(" ,.;:-") + "…"
+    return clipped.strip() or "video de x"
 
 
 def media_count(job: dict) -> int:
@@ -207,7 +214,7 @@ def media_count(job: dict) -> int:
 
 
 def download_basename(job: dict, media_index: str | None = None) -> str:
-    description = first_words(job.get("description") or job.get("title") or "video de x")
+    description = short_title(job.get("description") or job.get("title") or "video de x")
     user = str(job.get("uploader_id") or job.get("uploader") or "x").lstrip("@")
     date = job.get("upload_date") or datetime.now(timezone.utc).strftime("%d%m%y")
     # Windows does not allow ":" in filenames, so the visible mm:ss duration is saved as mm-ss.
@@ -337,6 +344,14 @@ def strip_tags(value: str) -> str:
     return re.sub(r"<[^>]+>", "", value)
 
 
+def video_thumbnail_url(value: str) -> str | None:
+    """Descarta logos, publicidad o URLs relativas que X2Twitter mete entre las miniaturas."""
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or parsed.netloc != "pbs.twimg.com":
+        return None
+    return value if "_video_thumb" in parsed.path else None
+
+
 def extract_info_from_x2twitter(url: str) -> dict | None:
     now = time.time()
     with X2_CACHE_LOCK:
@@ -414,8 +429,8 @@ def extract_info_from_x2twitter(url: str) -> dict | None:
 
     thumbnail_urls = []
     for match in re.finditer(r'<img[^>]+src="([^"]+)"', markup, re.IGNORECASE):
-        thumbnail_url = html.unescape(match.group(1))
-        if thumbnail_url not in thumbnail_urls:
+        thumbnail_url = video_thumbnail_url(html.unescape(match.group(1)).strip())
+        if thumbnail_url and thumbnail_url not in thumbnail_urls:
             thumbnail_urls.append(thumbnail_url)
     if len(thumbnail_urls) >= len(media_indexes):
         for item in formats:
@@ -666,7 +681,7 @@ def public_job(job: dict) -> dict:
     height = best.get("height") or 9
     return {
         "token": job["token"],
-        "title": job["title"],
+        "title": short_title(job.get("description") or job["title"]),
         "thumbnail": job.get("thumbnail"),
         "duration": job.get("duration"),
         "durationLabel": job.get("durationLabel"),

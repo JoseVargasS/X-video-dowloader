@@ -240,6 +240,13 @@ function createPreviewPanel(videoData) {
 
   thumbnail.alt = "";
   thumbnail.hidden = true;
+  thumbnail.referrerPolicy = "no-referrer";
+  // Si X no tiene miniatura para ese video, se oculta en vez de mostrar el icono de imagen rota.
+  thumbnail.addEventListener("error", () => {
+    thumbnail.hidden = true;
+    thumbnail.removeAttribute("src");
+    video.removeAttribute("poster");
+  });
   video.playsInline = true;
   video.hidden = true;
   controls.hidden = true;

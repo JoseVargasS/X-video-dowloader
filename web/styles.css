@@ -170,6 +170,20 @@ button:disabled {
   color: var(--muted);
 }
 
+.collection-head > div:first-child {
+  min-width: 0;
+}
+
+/* El titulo viene del texto completo del tweet: nunca debe desbordar el layout. */
+.collection-head h2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .collection-actions {
   display: flex;
   gap: 10px;
@@ -280,6 +294,11 @@ button:disabled {
 
 .video-stage img {
   z-index: 1;
+}
+
+/* Miniatura descartada o sin URL: no debe ocupar el stage. */
+.video-stage img:not([src]) {
+  display: none;
 }
 
 .video-stage video {
